@@ -1,0 +1,808 @@
+**Prompt 1:**
+
+
+**Purpose:** To get the phase 2 of the project completed (graph layer)
+**Prompt Length:** ~30 lines (ends at line 34)  
+**Response Length:** ~750 lines (ends at line 803)
+
+
+
+**Shreyas:** 
+/------------------------------------------------------------/ 
+Heyyyyyyy Claude,
+
+I have completed Phase 1 (Data Preparation & Normalization) according to your architecture.  
+
+- Raw JSONL data has been ingested into Supabase staging tables  
+- Normalized domain tables have been created with UUID primary keys and foreign key constraints  
+- The preprocessing pipeline has populated these clean tables with validated data  
+- Referential integrity checks pass, and the Order-to-Cash flow can be traced across entities  
+
+I have also shared my current project folder structure for context and the table names for the new tables.
+
+Could you now provide a complete implementation for Phase 2 (Graph Layer) using NetworkX, tailored to my existing schema and table names?
+
+Please include the following:
+
+- The exact folders and files I should create  
+- Where each file should live in the project  
+- Full code for graph construction from the clean Supabase tables  
+- Node definitions for each entity type  
+- Edge definitions representing both primary flow and contextual relationships  
+- Graph analysis utilities (e.g. detecting incomplete flows)  
+- Serialization for frontend visualization (react-force-graph format)  
+- Caching or persistence strategy for fast reloads  
+- A runnable script to build and store the graph  
+
+Assume Phase 1 is complete and the goal is to produce a fully functional graph layer ready for backend integration.
+
+/------------------------------------------------------------/ 
+
+
+**Claude-AI:**
+/------------------------------------------------------------/ 
+I can see your full folder structure and both files clearly. Phase 1 is **100% complete**. Here's a quick confirmation of what you've done:
+
+- Raw JSONL ingested to Supabase via `ingest_data.py`
+- All 9 clean tables created with proper FK constraints and indexes
+- `pipeline.py` populated every table with correct UUID normalization, null handling, and referential integrity checks
+
+**One minor thing to note before Phase 2:** your table is named `products_clean` (not `products`) and `sales_order_items_clean` (not `sales_order_items`). The graph builder code needs to reference these exact names — I'll handle that below.
+
+---
+
+## Phase 2: Complete Graph Layer
+
+Here's exactly what to create, file by file, matching your current structure:
+
+```
+your-project/
+├── graph/                    ← CREATE THIS FOLDER
+│   ├── __init__.py           ← new
+│   ├── builder.py            ← new (core graph construction)
+│   ├── analyzer.py           ← new (broken flow detection + stats)
+│   ├── serializer.py         ← new (JSON export for frontend)
+│   └── cache.py              ← new (pickle persistence)
+├── scripts/
+│   ├── ingest_data.py        ← already exists
+│   └── build_graph.py        ← new (run once to build + save)
+├── preprocessing/
+│   ├── pipeline.py           ← already exists
+│   └── audit_tables.py       ← already exists
+├── .env                      ← already exists
+└── requirements.txt          ← update this
+```
+
+---
+
+### Step 1 — Update `requirements.txt`
+
+Add these to whatever you already have:
+
+```txt
+networkx==3.3
+supabase==2.4.2
+python-dotenv==1.0.1
+pandas==2.2.2
+```
+
+---
+
+### Step 2 — `graph/__init__.py`
+
+```python
+# graph/__init__.py
+```
+
+---
+
+### Step 3 — `graph/builder.py`
+
+This is the core file. Note the exact table names `products_clean` and `sales_order_items_clean` matching your schema.
+
+```python
+# graph/builder.py
+import networkx as nx
+from supabase import create_client, Client
+
+
+class OTCGraphBuilder:
+    """
+    Builds a NetworkX DiGraph from the 9 clean Supabase tables.
+    Node types: Customer, Product, Address, SalesOrder, OrderItem,
+                Delivery, BillingDocument, JournalEntry
+    Edge types: primary flow edges + contextual edges (dashed in diagram)
+    """
+
+    def __init__(self, supabase_url: str, supabase_key: str):
+        self.db: Client = create_client(supabase_url, supabase_key)
+        self.G = nx.DiGraph()
+
+    # ──────────────────────────────────────────────
+    # PUBLIC
+    # ──────────────────────────────────────────────
+
+    def build(self) -> nx.DiGraph:
+        print("Building OTC graph...")
+        print("─" * 40)
+        self._add_customers()
+        self._add_products()
+        self._add_addresses()
+        self._add_sales_orders()
+        self._add_sales_order_items()
+        self._add_deliveries()
+        self._add_billing_documents()
+        self._add_journal_entries()
+        print("─" * 40)
+        print(f"Nodes total: {self.G.number_of_nodes()}")
+        print("Adding edges...")
+        self._add_edges()
+        print(f"Edges total: {self.G.number_of_edges()}")
+        print("Graph build complete ✓")
+        return self.G
+
+    # ──────────────────────────────────────────────
+    # NODE LOADERS
+    # ──────────────────────────────────────────────
+
+    def _add_customers(self):
+        rows = self.db.table("customers").select("*").execute().data
+        for r in rows:
+            self.G.add_node(
+                r["id"],
+                entity_type="Customer",
+                label=r.get("name") or r.get("customer_id", ""),
+                customer_id=r.get("customer_id"),
+                region=r.get("region"),
+                country=r.get("country"),
+            )
+        print(f"  ✓ Customers:        {len(rows)}")
+
+    def _add_products(self):
+        # ⚠️ your table is products_clean, not products
+        rows = self.db.table("products_clean").select("*").execute().data
+        for r in rows:
+            self.G.add_node(
+                r["id"],
+                entity_type="Product",
+                label=r.get("description") or r.get("material_id", ""),
+                material_id=r.get("material_id"),
+                product_group=r.get("product_group"),
+                unit_of_measure=r.get("unit_of_measure"),
+            )
+        print(f"  ✓ Products:         {len(rows)}")
+
+    def _add_addresses(self):
+        rows = self.db.table("addresses").select("*").execute().data
+        for r in rows:
+            self.G.add_node(
+                r["id"],
+                entity_type="Address",
+                label=r.get("city") or r.get("address_id", ""),
+                address_id=r.get("address_id"),
+                city=r.get("city"),
+                postal_code=r.get("postal_code"),
+                country=r.get("country"),
+                plant_code=r.get("plant_code"),
+            )
+        print(f"  ✓ Addresses:        {len(rows)}")
+
+    def _add_sales_orders(self):
+        rows = self.db.table("sales_orders").select("*").execute().data
+        for r in rows:
+            self.G.add_node(
+                r["id"],
+                entity_type="SalesOrder",
+                label=f"SO-{r['order_id']}",
+                order_id=r.get("order_id"),
+                order_date=str(r.get("order_date") or ""),
+                net_value=float(r.get("net_value") or 0),
+                status=r.get("status"),
+                currency=r.get("currency"),
+            )
+        print(f"  ✓ Sales orders:     {len(rows)}")
+
+    def _add_sales_order_items(self):
+        # ⚠️ your table is sales_order_items_clean, not sales_order_items
+        rows = self.db.table("sales_order_items_clean").select("*").execute().data
+        for r in rows:
+            self.G.add_node(
+                r["id"],
+                entity_type="OrderItem",
+                label=f"ITEM-{r.get('item_id', '')}",
+                item_id=r.get("item_id"),
+                quantity=float(r.get("quantity") or 0),
+                unit_price=float(r.get("unit_price") or 0),
+                net_value=float(r.get("net_value") or 0),
+                item_number=r.get("item_number"),
+            )
+        print(f"  ✓ Order items:      {len(rows)}")
+
+    def _add_deliveries(self):
+        rows = self.db.table("deliveries").select("*").execute().data
+        for r in rows:
+            self.G.add_node(
+                r["id"],
+                entity_type="Delivery",
+                label=f"DEL-{r['delivery_id']}",
+                delivery_id=r.get("delivery_id"),
+                delivery_date=str(r.get("delivery_date") or ""),
+                actual_goods_issue_date=str(r.get("actual_goods_issue_date") or ""),
+                plant_code=r.get("plant_code"),
+                status=r.get("status"),
+            )
+        print(f"  ✓ Deliveries:       {len(rows)}")
+
+    def _add_billing_documents(self):
+        rows = self.db.table("billing_documents").select("*").execute().data
+        for r in rows:
+            self.G.add_node(
+                r["id"],
+                entity_type="BillingDocument",
+                label=f"BILL-{r['billing_id']}",
+                billing_id=r.get("billing_id"),
+                billing_date=str(r.get("billing_date") or ""),
+                net_value=float(r.get("net_value") or 0),
+                document_type=r.get("document_type"),
+                currency=r.get("currency"),
+            )
+        print(f"  ✓ Billing docs:     {len(rows)}")
+
+    def _add_journal_entries(self):
+        rows = self.db.table("journal_entries").select("*").execute().data
+        for r in rows:
+            self.G.add_node(
+                r["id"],
+                entity_type="JournalEntry",
+                label=f"JE-{r['journal_id']}",
+                journal_id=r.get("journal_id"),
+                posting_date=str(r.get("posting_date") or ""),
+                amount=float(r.get("amount") or 0),
+                currency=r.get("currency"),
+                gl_account=r.get("gl_account"),
+                document_type=r.get("document_type"),
+            )
+        print(f"  ✓ Journal entries:  {len(rows)}")
+
+    # ──────────────────────────────────────────────
+    # EDGE LOADERS
+    # Each method maps to one arrow in Image 3 (the graph diagram)
+    # ──────────────────────────────────────────────
+
+    def _add_edges(self):
+        counts = {}
+
+        # ── PRIMARY FLOW EDGES (solid arrows in diagram) ──────────
+
+        # Customer --[PLACES]--> SalesOrder
+        c = 0
+        for r in self.db.table("sales_orders").select("id, customer_id").execute().data:
+            if r.get("customer_id") and r["customer_id"] in self.G:
+                self.G.add_edge(
+                    r["customer_id"], r["id"],
+                    relationship="PLACES_ORDER",
+                    edge_type="primary"
+                )
+                c += 1
+        counts["Customer→SalesOrder"] = c
+
+        # SalesOrder --[HAS_ITEM]--> OrderItem
+        c = 0
+        for r in self.db.table("sales_order_items_clean").select("id, order_id").execute().data:
+            if r.get("order_id") and r["order_id"] in self.G:
+                self.G.add_edge(
+                    r["order_id"], r["id"],
+                    relationship="HAS_ITEM",
+                    edge_type="primary"
+                )
+                c += 1
+        counts["SalesOrder→OrderItem"] = c
+
+        # SalesOrder --[FULFILLED_BY]--> Delivery
+        c = 0
+        for r in self.db.table("deliveries").select("id, order_id").execute().data:
+            if r.get("order_id") and r["order_id"] in self.G:
+                self.G.add_edge(
+                    r["order_id"], r["id"],
+                    relationship="FULFILLED_BY",
+                    edge_type="primary"
+                )
+                c += 1
+        counts["SalesOrder→Delivery"] = c
+
+        # Delivery --[BILLED_AS]--> BillingDocument
+        c = 0
+        for r in self.db.table("billing_documents").select("id, delivery_id").execute().data:
+            if r.get("delivery_id") and r["delivery_id"] in self.G:
+                self.G.add_edge(
+                    r["delivery_id"], r["id"],
+                    relationship="BILLED_AS",
+                    edge_type="primary"
+                )
+                c += 1
+        counts["Delivery→BillingDoc"] = c
+
+        # BillingDocument --[POSTS_TO]--> JournalEntry
+        c = 0
+        for r in self.db.table("journal_entries").select("id, billing_id").execute().data:
+            if r.get("billing_id") and r["billing_id"] in self.G:
+                self.G.add_edge(
+                    r["billing_id"], r["id"],
+                    relationship="POSTS_TO_JOURNAL",
+                    edge_type="primary"
+                )
+                c += 1
+        counts["BillingDoc→JournalEntry"] = c
+
+        # ── CONTEXTUAL EDGES (dashed arrows in diagram) ────────────
+
+        # OrderItem --[IS_OF_PRODUCT]--> Product
+        c = 0
+        for r in self.db.table("sales_order_items_clean").select("id, material_id").execute().data:
+            if r.get("material_id") and r["material_id"] in self.G:
+                self.G.add_edge(
+                    r["id"], r["material_id"],
+                    relationship="IS_OF_PRODUCT",
+                    edge_type="contextual"
+                )
+                c += 1
+        counts["OrderItem→Product"] = c
+
+        # Delivery --[SHIPS_TO]--> Address
+        c = 0
+        for r in self.db.table("deliveries").select("id, ship_to_address_id").execute().data:
+            if r.get("ship_to_address_id") and r["ship_to_address_id"] in self.G:
+                self.G.add_edge(
+                    r["id"], r["ship_to_address_id"],
+                    relationship="SHIPS_TO",
+                    edge_type="contextual"
+                )
+                c += 1
+        counts["Delivery→Address"] = c
+
+        # BillingDocument --[BILLED_TO]--> Customer
+        c = 0
+        for r in self.db.table("billing_documents").select("id, customer_id").execute().data:
+            if r.get("customer_id") and r["customer_id"] in self.G:
+                self.G.add_edge(
+                    r["id"], r["customer_id"],
+                    relationship="BILLED_TO",
+                    edge_type="contextual"
+                )
+                c += 1
+        counts["BillingDoc→Customer"] = c
+
+        # Print edge summary
+        for label, count in counts.items():
+            print(f"  ✓ {label}: {count} edges")
+```
+
+---
+
+### Step 4 — `graph/analyzer.py`
+
+```python
+# graph/analyzer.py
+import networkx as nx
+
+
+class OTCGraphAnalyzer:
+    """
+    Runs analytical queries directly on the NetworkX graph.
+    Used by the FastAPI query layer to build LLM context.
+    """
+
+    def __init__(self, G: nx.DiGraph):
+        self.G = G
+
+    def summary(self) -> dict:
+        """Entity counts — always included in LLM context."""
+        counts = {}
+        for _, data in self.G.nodes(data=True):
+            etype = data.get("entity_type", "Unknown")
+            counts[etype] = counts.get(etype, 0) + 1
+        return {
+            "total_nodes": self.G.number_of_nodes(),
+            "total_edges": self.G.number_of_edges(),
+            "by_type": counts,
+        }
+
+    def detect_broken_flows(self) -> dict:
+        """
+        Finds incomplete O2C chains:
+        - Deliveries never billed
+        - Billing docs with no delivery
+        - Orders never delivered
+        - Journal entries with no billing doc
+        """
+        delivery_nodes = [
+            (n, d) for n, d in self.G.nodes(data=True)
+            if d.get("entity_type") == "Delivery"
+        ]
+        billing_nodes = [
+            (n, d) for n, d in self.G.nodes(data=True)
+            if d.get("entity_type") == "BillingDocument"
+        ]
+        order_nodes = [
+            (n, d) for n, d in self.G.nodes(data=True)
+            if d.get("entity_type") == "SalesOrder"
+        ]
+        journal_nodes = [
+            (n, d) for n, d in self.G.nodes(data=True)
+            if d.get("entity_type") == "JournalEntry"
+        ]
+
+        # Deliveries → no outgoing BillingDocument
+        delivered_not_billed = []
+        for node_id, data in delivery_nodes:
+            successors = list(self.G.successors(node_id))
+            has_billing = any(
+                self.G.nodes[s].get("entity_type") == "BillingDocument"
+                for s in successors
+            )
+            if not has_billing:
+                delivered_not_billed.append({
+                    "delivery_id": data.get("delivery_id"),
+                    "node_id": node_id,
+                    "status": data.get("status"),
+                    "delivery_date": data.get("delivery_date"),
+                })
+
+        # Billing docs → no incoming Delivery
+        billed_without_delivery = []
+        for node_id, data in billing_nodes:
+            predecessors = list(self.G.predecessors(node_id))
+            has_delivery = any(
+                self.G.nodes[p].get("entity_type") == "Delivery"
+                for p in predecessors
+            )
+            if not has_delivery:
+                billed_without_delivery.append({
+                    "billing_id": data.get("billing_id"),
+                    "node_id": node_id,
+                    "billing_date": data.get("billing_date"),
+                    "net_value": data.get("net_value"),
+                })
+
+        # Orders → no outgoing Delivery
+        orders_not_delivered = []
+        for node_id, data in order_nodes:
+            successors = list(self.G.successors(node_id))
+            has_delivery = any(
+                self.G.nodes[s].get("entity_type") == "Delivery"
+                for s in successors
+            )
+            if not has_delivery:
+                orders_not_delivered.append({
+                    "order_id": data.get("order_id"),
+                    "node_id": node_id,
+                    "status": data.get("status"),
+                    "net_value": data.get("net_value"),
+                })
+
+        # Journal entries → no incoming BillingDocument
+        journals_without_billing = []
+        for node_id, data in journal_nodes:
+            predecessors = list(self.G.predecessors(node_id))
+            has_billing = any(
+                self.G.nodes[p].get("entity_type") == "BillingDocument"
+                for p in predecessors
+            )
+            if not has_billing:
+                journals_without_billing.append({
+                    "journal_id": data.get("journal_id"),
+                    "node_id": node_id,
+                    "amount": data.get("amount"),
+                    "gl_account": data.get("gl_account"),
+                })
+
+        return {
+            "delivered_not_billed": delivered_not_billed,
+            "billed_without_delivery": billed_without_delivery,
+            "orders_not_delivered": orders_not_delivered,
+            "journals_without_billing": journals_without_billing,
+        }
+
+    def trace_order(self, order_id: str) -> dict:
+        """
+        Full O2C chain trace for one order:
+        Customer → SalesOrder → [OrderItems] → Delivery → BillingDoc → JournalEntries
+        """
+        order_node = next(
+            (n for n, d in self.G.nodes(data=True)
+             if d.get("order_id") == order_id),
+            None
+        )
+        if not order_node:
+            return {"error": f"Order {order_id} not found"}
+
+        result = {"sales_order": dict(self.G.nodes[order_node])}
+        result["sales_order"]["node_id"] = order_node
+
+        # Customer (predecessor)
+        for pred in self.G.predecessors(order_node):
+            if self.G.nodes[pred].get("entity_type") == "Customer":
+                result["customer"] = {**dict(self.G.nodes[pred]), "node_id": pred}
+
+        # Order items (successors)
+        result["order_items"] = []
+        for succ in self.G.successors(order_node):
+            if self.G.nodes[succ].get("entity_type") == "OrderItem":
+                item = {**dict(self.G.nodes[succ]), "node_id": succ}
+                # Product for this item
+                for item_succ in self.G.successors(succ):
+                    if self.G.nodes[item_succ].get("entity_type") == "Product":
+                        item["product"] = {**dict(self.G.nodes[item_succ]), "node_id": item_succ}
+                result["order_items"].append(item)
+
+        # Delivery (successor)
+        for succ in self.G.successors(order_node):
+            if self.G.nodes[succ].get("entity_type") == "Delivery":
+                result["delivery"] = {**dict(self.G.nodes[succ]), "node_id": succ}
+                # Billing (successor of delivery)
+                for bill_succ in self.G.successors(succ):
+                    if self.G.nodes[bill_succ].get("entity_type") == "BillingDocument":
+                        result["billing"] = {**dict(self.G.nodes[bill_succ]), "node_id": bill_succ}
+                        # Journal entries (successors of billing)
+                        result["journal_entries"] = [
+                            {**dict(self.G.nodes[je]), "node_id": je}
+                            for je in self.G.successors(bill_succ)
+                            if self.G.nodes[je].get("entity_type") == "JournalEntry"
+                        ]
+
+        return result
+
+    def get_customer_orders(self, customer_id: str) -> list:
+        """All orders for a given customer_id value."""
+        cust_node = next(
+            (n for n, d in self.G.nodes(data=True)
+             if d.get("customer_id") == customer_id),
+            None
+        )
+        if not cust_node:
+            return []
+        return [
+            {**dict(self.G.nodes[s]), "node_id": s}
+            for s in self.G.successors(cust_node)
+            if self.G.nodes[s].get("entity_type") == "SalesOrder"
+        ]
+
+    def top_products_by_order_value(self, top_n: int = 10) -> list:
+        """Products ranked by total net_value of their order items."""
+        product_totals = {}
+        for node_id, data in self.G.nodes(data=True):
+            if data.get("entity_type") == "OrderItem":
+                for succ in self.G.successors(node_id):
+                    if self.G.nodes[succ].get("entity_type") == "Product":
+                        mid = self.G.nodes[succ].get("material_id", succ)
+                        product_totals[mid] = (
+                            product_totals.get(mid, 0) + (data.get("net_value") or 0)
+                        )
+        ranked = sorted(product_totals.items(), key=lambda x: x[1], reverse=True)
+        return [{"material_id": k, "total_net_value": v} for k, v in ranked[:top_n]]
+```
+
+---
+
+### Step 5 — `graph/serializer.py`
+
+```python
+# graph/serializer.py
+import json
+import networkx as nx
+
+
+class OTCGraphSerializer:
+    """
+    Converts the NetworkX graph to the JSON format
+    expected by react-force-graph on the frontend.
+    """
+
+    def __init__(self, G: nx.DiGraph):
+        self.G = G
+
+    def to_frontend_json(self) -> dict:
+        """
+        Returns {"nodes": [...], "links": [...]}
+        Each node gets all its attributes.
+        Each link gets source, target, relationship, edge_type.
+        """
+        nodes = []
+        for node_id, attrs in self.G.nodes(data=True):
+            nodes.append({"id": node_id, **self._clean(attrs)})
+
+        links = []
+        for src, tgt, attrs in self.G.edges(data=True):
+            links.append({
+                "source": src,
+                "target": tgt,
+                **self._clean(attrs),
+            })
+
+        return {"nodes": nodes, "links": links}
+
+    def _clean(self, attrs: dict) -> dict:
+        """Ensure all values are JSON-serializable."""
+        clean = {}
+        for k, v in attrs.items():
+            if v is None:
+                clean[k] = None
+            elif isinstance(v, float) and (v != v):  # NaN check
+                clean[k] = None
+            else:
+                try:
+                    json.dumps(v)
+                    clean[k] = v
+                except (TypeError, ValueError):
+                    clean[k] = str(v)
+        return clean
+
+    def to_json_string(self) -> str:
+        return json.dumps(self.to_frontend_json(), default=str)
+```
+
+---
+
+### Step 6 — `graph/cache.py`
+
+```python
+# graph/cache.py
+import pickle
+import json
+import os
+import networkx as nx
+from graph.serializer import OTCGraphSerializer
+
+
+CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "cache")
+
+
+def save_graph(G: nx.DiGraph, name: str = "otc_graph"):
+    """Save graph as both pickle (fast reload) and JSON (frontend)."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+
+    # Pickle — for fast Python reload
+    pkl_path = os.path.join(CACHE_DIR, f"{name}.pkl")
+    with open(pkl_path, "wb") as f:
+        pickle.dump(G, f)
+    print(f"  ✓ Pickle saved → {pkl_path}")
+
+    # JSON — for frontend / API
+    json_path = os.path.join(CACHE_DIR, f"{name}.json")
+    serializer = OTCGraphSerializer(G)
+    with open(json_path, "w") as f:
+        f.write(serializer.to_json_string())
+    print(f"  ✓ JSON saved   → {json_path}")
+
+
+def load_graph(name: str = "otc_graph") -> nx.DiGraph:
+    """Load from pickle cache — fast, no Supabase call needed."""
+    pkl_path = os.path.join(CACHE_DIR, f"{name}.pkl")
+    if not os.path.exists(pkl_path):
+        raise FileNotFoundError(
+            f"No cached graph at {pkl_path}. Run scripts/build_graph.py first."
+        )
+    with open(pkl_path, "rb") as f:
+        G = pickle.load(f)
+    print(f"  ✓ Graph loaded from cache ({G.number_of_nodes()} nodes, {G.number_of_edges()} edges)")
+    return G
+
+
+def load_graph_json(name: str = "otc_graph") -> dict:
+    """Load the frontend JSON directly — used by FastAPI /graph endpoint."""
+    json_path = os.path.join(CACHE_DIR, f"{name}.json")
+    if not os.path.exists(json_path):
+        raise FileNotFoundError(
+            f"No cached JSON at {json_path}. Run scripts/build_graph.py first."
+        )
+    with open(json_path, "r") as f:
+        return json.load(f)
+
+
+def graph_exists(name: str = "otc_graph") -> bool:
+    pkl_path = os.path.join(CACHE_DIR, f"{name}.pkl")
+    return os.path.exists(pkl_path)
+```
+
+---
+
+### Step 7 — `scripts/build_graph.py`
+
+This is the one script you run once (and re-run whenever data changes) to build and cache the graph.
+
+```python
+# scripts/build_graph.py
+import os
+import sys
+from dotenv import load_dotenv
+
+# Allow imports from project root
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+load_dotenv()
+
+from graph.builder import OTCGraphBuilder
+from graph.analyzer import OTCGraphAnalyzer
+from graph.cache import save_graph
+
+def main():
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY")
+
+    if not url or not key:
+        raise ValueError("Missing SUPABASE_URL or SUPABASE_KEY in .env")
+
+    # 1. Build
+    builder = OTCGraphBuilder(url, key)
+    G = builder.build()
+
+    # 2. Analyze — print summary to confirm correctness
+    print("\nRunning post-build analysis...")
+    analyzer = OTCGraphAnalyzer(G)
+
+    summary = analyzer.summary()
+    print(f"\nGraph summary:")
+    for etype, count in summary["by_type"].items():
+        print(f"  {etype}: {count}")
+    print(f"  Total nodes: {summary['total_nodes']}")
+    print(f"  Total edges: {summary['total_edges']}")
+
+    broken = analyzer.detect_broken_flows()
+    print(f"\nBroken flow detection:")
+    print(f"  Delivered not billed:     {len(broken['delivered_not_billed'])}")
+    print(f"  Billed without delivery:  {len(broken['billed_without_delivery'])}")
+    print(f"  Orders not delivered:     {len(broken['orders_not_delivered'])}")
+    print(f"  Journals without billing: {len(broken['journals_without_billing'])}")
+
+    # 3. Save
+    print("\nSaving graph cache...")
+    save_graph(G)
+
+    print("\n✅ Phase 2 complete. Graph is ready for Phase 3 (FastAPI backend).")
+    print("   Cache location: cache/otc_graph.pkl  (Python reload)")
+    print("   Cache location: cache/otc_graph.json (frontend JSON)")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+---
+
+## How to Run Phase 2
+
+```bash
+# From your project root
+pip install networkx supabase python-dotenv
+
+python scripts/build_graph.py
+```
+
+You should see output like:
+```
+Building OTC graph...
+────────────────────────────────────────
+  ✓ Customers:        8
+  ✓ Products:         69
+  ...
+Nodes total: ~250
+Adding edges...
+  ✓ Customer→SalesOrder: X edges
+  ...
+Edges total: ~400
+
+Graph summary:
+  Customer: 8
+  SalesOrder: ...
+  ...
+
+Broken flow detection:
+  Delivered not billed: X
+  ...
+
+✅ Phase 2 complete.
+```
+
+A `cache/` folder will be created with `otc_graph.pkl` and `otc_graph.json`. Once you confirm this runs cleanly, you're ready for **Phase 3 (FastAPI backend)**.
+
+/------------------------------------------------------------/      

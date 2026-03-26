@@ -1,0 +1,742 @@
+**Prompt 1:**
+
+
+**Purpose:** To get the phase 3 of the project completed (backend)
+**Prompt Length:** ~20 lines (ends at line 29)  
+**Response Length:** ~700 lines (ends at line 737)
+
+
+
+**Shreyas:** 
+/------------------------------------------------------------/ 
+Heyyyyy Claude,
+
+I have completed Phase 2 of my project (graph construction and caching).
+Please review my current setup and provide a complete implementation plan for Phase 3: Backend API, following the same level of detail, structure, and production-ready quality as you provided for Phase 2.
+
+Before proceeding, confirm that Phase 2 outputs and dependencies are sufficient for Phase 3, and highlight any missing components or recommended improvements.
+
+Project Context
+
+This project is a Graph-Based Data Modeling and Query System for an Order-to-Cash (O2C) dataset.
+
+Technology Stack
+Database: Supabase (PostgreSQL)
+Backend: Python (FastAPI)
+Frontend: React with Next.js
+Graph Layer:
+NetworkX (graph construction & analysis)
+react-force-graph (visualization)
+LLM Provider: Groq API (console.groq.com)
+
+Please select the most appropriate Groq-hosted model for structured reasoning over graph-derived context.
+
+/------------------------------------------------------------/ 
+
+
+
+
+**Claude-AI:**
+/------------------------------------------------------------/ 
+
+Let me check your current structure first.Good. I have full context — your folder structure, pipeline, table names (`products_clean`, `sales_order_items_clean`), Groq API, and the 3 required query types + guardrails. Let me build Phase 3 completely.
+
+---
+
+## Phase 3: FastAPI Backend — Complete
+
+Here's the full folder structure to create inside `backend/`:
+
+```
+backend/
+├── main.py              ← FastAPI app entry point
+├── config.py            ← env vars, Groq client, graph loader
+├── routers/
+│   ├── __init__.py
+│   ├── graph.py         ← REST graph endpoints
+│   └── query.py         ← NL query + streaming endpoints
+├── services/
+│   ├── __init__.py
+│   ├── context_builder.py   ← smart context for LLM
+│   └── guardrails.py        ← domain restriction logic
+└── requirements.txt
+```
+
+---
+
+### Step 1 — `backend/requirements.txt`
+
+```txt
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+groq==0.9.0
+networkx==3.3
+supabase==2.4.2
+python-dotenv==1.0.1
+pandas==2.2.2
+```
+
+---
+
+### Step 2 — `backend/config.py`
+
+```python
+# backend/config.py
+import os
+import sys
+from dotenv import load_dotenv
+from groq import Groq
+import networkx as nx
+
+load_dotenv()
+
+# ── Env vars ──────────────────────────────────────────────────────
+SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_KEY = os.environ["SUPABASE_KEY"]
+GROQ_API_KEY = os.environ["GROQ_API_KEY"]
+
+# ── Groq client ───────────────────────────────────────────────────
+# Best Groq model for reasoning over structured context:
+# llama-3.3-70b-versatile — 128k context, strong instruction following
+GROQ_MODEL = "llama-3.3-70b-versatile"
+
+groq_client = Groq(api_key=GROQ_API_KEY)
+
+# ── Graph (loaded once at startup) ───────────────────────────────
+# sys.path needs project root so graph/ package is importable
+PROJECT_ROOT = os.path.join(os.path.dirname(__file__), "..")
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from graph.cache import load_graph, load_graph_json
+from graph.analyzer import OTCGraphAnalyzer
+
+G: nx.DiGraph = None
+graph_json: dict = None
+analyzer: OTCGraphAnalyzer = None
+
+
+def load_all():
+    """Called once at FastAPI startup."""
+    global G, graph_json, analyzer
+    G = load_graph()
+    graph_json = load_graph_json()
+    analyzer = OTCGraphAnalyzer(G)
+    print(f"  ✓ Graph ready: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+```
+
+---
+
+### Step 3 — `backend/services/guardrails.py`
+
+This is the domain restriction layer — evaluated **before** any LLM call.
+
+```python
+# backend/services/guardrails.py
+
+# Keywords that belong to the O2C domain
+OTC_KEYWORDS = {
+    "order", "sales order", "delivery", "billing", "invoice", "journal",
+    "customer", "product", "material", "payment", "shipment", "plant",
+    "gl account", "fiscal", "accounting", "flow", "trace", "billed",
+    "unbilled", "incomplete", "broken", "revenue", "dispatch", "item",
+    "quantity", "amount", "currency", "status", "document", "entry",
+    "ship", "sold", "fulfil", "fulfill", "goods", "address", "region",
+    "country", "net value", "posting", "o2c", "otc", "order-to-cash",
+    "order to cash",
+}
+
+REJECTION_RESPONSE = (
+    "This system is designed to answer questions related to the "
+    "Order-to-Cash dataset only. I can help you with queries about "
+    "sales orders, deliveries, billing documents, journal entries, "
+    "customers, and products. Please ask a question related to this dataset."
+)
+
+
+def is_otc_query(message: str) -> bool:
+    """
+    Returns True if the message contains at least one O2C domain keyword.
+    Case-insensitive. Checked before any LLM call.
+    """
+    lower = message.lower()
+    return any(kw in lower for kw in OTC_KEYWORDS)
+
+
+def get_rejection_response() -> str:
+    return REJECTION_RESPONSE
+```
+
+---
+
+### Step 4 — `backend/services/context_builder.py`
+
+This builds the minimal, targeted context injected into every LLM prompt — never dumps the full graph.
+
+```python
+# backend/services/context_builder.py
+import json
+import networkx as nx
+from graph.analyzer import OTCGraphAnalyzer
+
+
+class ContextBuilder:
+    """
+    Builds a focused context string for each query type.
+    Keeps the prompt lean — only pulls data relevant to the question.
+    """
+
+    def __init__(self, G: nx.DiGraph, analyzer: OTCGraphAnalyzer):
+        self.G = G
+        self.analyzer = analyzer
+
+    def build(self, query: str, highlighted_node_ids: list[str] = None) -> str:
+        query_lower = query.lower()
+        parts = []
+
+        # ── Always include: graph summary ─────────────────────────
+        summary = self.analyzer.summary()
+        parts.append("DATASET SUMMARY:\n" + json.dumps(summary["by_type"], indent=2))
+
+        # ── Query type (a): product → billing document count ──────
+        if any(kw in query_lower for kw in [
+            "product", "material", "billing document", "highest", "most"
+        ]):
+            top = self.analyzer.top_products_by_order_value(top_n=15)
+            parts.append(
+                "TOP PRODUCTS BY ORDER VALUE (material_id → total net value):\n"
+                + json.dumps(top, indent=2)
+            )
+
+            # Also count billing docs per product via graph traversal
+            product_billing_counts = self._product_billing_counts()
+            parts.append(
+                "PRODUCTS BY BILLING DOCUMENT COUNT:\n"
+                + json.dumps(product_billing_counts[:15], indent=2)
+            )
+
+        # ── Query type (b): trace a specific flow ─────────────────
+        if any(kw in query_lower for kw in [
+            "trace", "flow", "full", "track", "path", "follow",
+            "billing doc", "order flow", "so-", "bill-", "del-"
+        ]):
+            # Try to extract an order ID from the query
+            import re
+            order_match = re.search(r'\b(\d{8,})\b', query)
+            if order_match:
+                order_id = order_match.group(1)
+                trace = self.analyzer.trace_order(order_id)
+                parts.append(
+                    f"FULL O2C TRACE FOR ORDER {order_id}:\n"
+                    + json.dumps(trace, indent=2, default=str)
+                )
+            else:
+                # No specific ID — show sample traces for 3 orders
+                sample_orders = [
+                    d.get("order_id") for _, d in self.G.nodes(data=True)
+                    if d.get("entity_type") == "SalesOrder"
+                ][:3]
+                traces = []
+                for oid in sample_orders:
+                    traces.append(self.analyzer.trace_order(oid))
+                parts.append(
+                    "SAMPLE O2C TRACES (first 3 orders):\n"
+                    + json.dumps(traces, indent=2, default=str)
+                )
+
+        # ── Query type (c): broken / incomplete flows ──────────────
+        if any(kw in query_lower for kw in [
+            "broken", "incomplete", "missing", "not billed", "unbilled",
+            "no delivery", "without delivery", "no billing", "gap", "issue",
+            "problem", "error", "failed"
+        ]):
+            broken = self.analyzer.detect_broken_flows()
+            parts.append(
+                "BROKEN / INCOMPLETE FLOWS:\n"
+                + json.dumps(broken, indent=2, default=str)
+            )
+
+        # ── Customer-specific queries ──────────────────────────────
+        if any(kw in query_lower for kw in ["customer", "client", "buyer"]):
+            customers = [
+                {"node_id": n, **d}
+                for n, d in self.G.nodes(data=True)
+                if d.get("entity_type") == "Customer"
+            ]
+            parts.append(
+                "ALL CUSTOMERS:\n"
+                + json.dumps(customers, indent=2, default=str)
+            )
+
+        # ── Delivery-specific queries ──────────────────────────────
+        if any(kw in query_lower for kw in [
+            "delivery", "deliveries", "shipped", "goods issue", "dispatch"
+        ]):
+            deliveries = [
+                {"node_id": n, **d}
+                for n, d in self.G.nodes(data=True)
+                if d.get("entity_type") == "Delivery"
+            ]
+            parts.append(
+                f"ALL DELIVERIES ({len(deliveries)} total):\n"
+                + json.dumps(deliveries[:30], indent=2, default=str)
+            )
+
+        # ── Journal / accounting queries ───────────────────────────
+        if any(kw in query_lower for kw in [
+            "journal", "gl account", "posting", "accounting", "fiscal"
+        ]):
+            journals = [
+                {"node_id": n, **d}
+                for n, d in self.G.nodes(data=True)
+                if d.get("entity_type") == "JournalEntry"
+            ]
+            parts.append(
+                f"JOURNAL ENTRIES ({len(journals)} total, showing first 30):\n"
+                + json.dumps(journals[:30], indent=2, default=str)
+            )
+
+        # ── Currently highlighted nodes (UI context) ───────────────
+        if highlighted_node_ids:
+            highlighted_data = []
+            for nid in highlighted_node_ids:
+                if nid in self.G.nodes:
+                    highlighted_data.append({"node_id": nid, **dict(self.G.nodes[nid])})
+            if highlighted_data:
+                parts.append(
+                    "CURRENTLY SELECTED NODES IN UI:\n"
+                    + json.dumps(highlighted_data, indent=2, default=str)
+                )
+
+        return "\n\n" + ("─" * 40 + "\n").join(parts)
+
+    def _product_billing_counts(self) -> list:
+        """
+        For each product, count how many billing documents
+        are reachable via: Product ← OrderItem → SalesOrder → Delivery → BillingDoc
+        """
+        product_billing = {}
+
+        for node_id, data in self.G.nodes(data=True):
+            if data.get("entity_type") != "OrderItem":
+                continue
+
+            # Find product
+            product_id = None
+            material_id = None
+            for succ in self.G.successors(node_id):
+                if self.G.nodes[succ].get("entity_type") == "Product":
+                    product_id = succ
+                    material_id = self.G.nodes[succ].get("material_id", succ)
+                    break
+            if not product_id:
+                continue
+
+            # Walk up to SalesOrder → Delivery → BillingDoc
+            for pred in self.G.predecessors(node_id):
+                if self.G.nodes[pred].get("entity_type") == "SalesOrder":
+                    for succ in self.G.successors(pred):
+                        if self.G.nodes[succ].get("entity_type") == "Delivery":
+                            for bill in self.G.successors(succ):
+                                if self.G.nodes[bill].get("entity_type") == "BillingDocument":
+                                    if material_id not in product_billing:
+                                        product_billing[material_id] = set()
+                                    product_billing[material_id].add(bill)
+
+        result = [
+            {
+                "material_id": mid,
+                "billing_document_count": len(bills),
+                "billing_node_ids": list(bills),
+            }
+            for mid, bills in product_billing.items()
+        ]
+        return sorted(result, key=lambda x: x["billing_document_count"], reverse=True)
+```
+
+---
+
+### Step 5 — `backend/routers/__init__.py`
+
+```python
+# backend/routers/__init__.py
+```
+
+---
+
+### Step 6 — `backend/routers/graph.py`
+
+Pure REST endpoints — no LLM involved.
+
+```python
+# backend/routers/graph.py
+from fastapi import APIRouter, HTTPException
+import backend.config as cfg
+
+router = APIRouter(prefix="/graph", tags=["graph"])
+
+
+@router.get("/")
+async def get_full_graph():
+    """
+    Returns the full graph as {nodes, links} for react-force-graph.
+    Called once on frontend load.
+    """
+    return cfg.graph_json
+
+
+@router.get("/summary")
+async def get_summary():
+    """Entity counts and edge totals."""
+    return cfg.analyzer.summary()
+
+
+@router.get("/node/{node_id}")
+async def get_node(node_id: str):
+    """
+    Returns a node's full attributes + all its direct connections.
+    Called by the frontend NodeInspector panel on click.
+    """
+    if node_id not in cfg.G.nodes:
+        raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+
+    attrs = dict(cfg.G.nodes[node_id])
+
+    # Outgoing edges
+    outgoing = [
+        {
+            "node_id": n,
+            "relationship": cfg.G.edges[node_id, n].get("relationship"),
+            "direction": "outgoing",
+            **dict(cfg.G.nodes[n]),
+        }
+        for n in cfg.G.successors(node_id)
+    ]
+
+    # Incoming edges
+    incoming = [
+        {
+            "node_id": n,
+            "relationship": cfg.G.edges[n, node_id].get("relationship"),
+            "direction": "incoming",
+            **dict(cfg.G.nodes[n]),
+        }
+        for n in cfg.G.predecessors(node_id)
+    ]
+
+    return {
+        "node": {"node_id": node_id, **attrs},
+        "connections": outgoing + incoming,
+    }
+
+
+@router.get("/trace/order/{order_id}")
+async def trace_order(order_id: str):
+    """
+    Full O2C chain for one sales order:
+    Customer → SalesOrder → OrderItems → Delivery → BillingDoc → JournalEntries
+    """
+    result = cfg.analyzer.trace_order(order_id)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+@router.get("/trace/billing/{billing_id}")
+async def trace_billing(billing_id: str):
+    """Trace backwards from a billing document to its sales order."""
+    billing_node = next(
+        (n for n, d in cfg.G.nodes(data=True) if d.get("billing_id") == billing_id),
+        None,
+    )
+    if not billing_node:
+        raise HTTPException(status_code=404, detail=f"Billing doc {billing_id} not found")
+
+    chain = {"billing": {"node_id": billing_node, **dict(cfg.G.nodes[billing_node])}}
+
+    for pred in cfg.G.predecessors(billing_node):
+        if cfg.G.nodes[pred].get("entity_type") == "Delivery":
+            chain["delivery"] = {"node_id": pred, **dict(cfg.G.nodes[pred])}
+            for order_pred in cfg.G.predecessors(pred):
+                if cfg.G.nodes[order_pred].get("entity_type") == "SalesOrder":
+                    chain["sales_order"] = {"node_id": order_pred, **dict(cfg.G.nodes[order_pred])}
+                    for cust_pred in cfg.G.predecessors(order_pred):
+                        if cfg.G.nodes[cust_pred].get("entity_type") == "Customer":
+                            chain["customer"] = {"node_id": cust_pred, **dict(cfg.G.nodes[cust_pred])}
+
+    chain["journal_entries"] = [
+        {"node_id": s, **dict(cfg.G.nodes[s])}
+        for s in cfg.G.successors(billing_node)
+        if cfg.G.nodes[s].get("entity_type") == "JournalEntry"
+    ]
+
+    return chain
+
+
+@router.get("/broken-flows")
+async def get_broken_flows():
+    """
+    All incomplete O2C chains:
+    delivered not billed, billed without delivery,
+    orders not delivered, journals without billing.
+    """
+    return cfg.analyzer.detect_broken_flows()
+
+
+@router.get("/customer/{customer_id}/orders")
+async def get_customer_orders(customer_id: str):
+    """All sales orders for a given customer_id value."""
+    orders = cfg.analyzer.get_customer_orders(customer_id)
+    if not orders:
+        raise HTTPException(status_code=404, detail=f"Customer {customer_id} not found or has no orders")
+    return {"customer_id": customer_id, "orders": orders}
+
+
+@router.get("/products/top")
+async def get_top_products(top_n: int = 10):
+    """Products ranked by total order value."""
+    return cfg.analyzer.top_products_by_order_value(top_n=top_n)
+```
+
+---
+
+### Step 7 — `backend/routers/query.py`
+
+The NL query endpoints — both standard and streaming — with guardrails.
+
+```python
+# backend/routers/query.py
+import json
+import re
+from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+import backend.config as cfg
+from backend.services.guardrails import is_otc_query, get_rejection_response
+from backend.services.context_builder import ContextBuilder
+
+router = APIRouter(prefix="/query", tags=["query"])
+
+# ── System prompt ─────────────────────────────────────────────────
+SYSTEM_PROMPT = """You are a data analysis assistant for an Order-to-Cash (O2C) business process dataset.
+
+STRICT RULES — follow these without exception:
+1. You ONLY answer questions about the data in the context provided below.
+2. If a question is unrelated to O2C — orders, deliveries, billing, journal entries, customers, products — respond ONLY with:
+   "This system is designed to answer questions related to the provided dataset only."
+3. NEVER invent, estimate, or hallucinate data. Every claim must be traceable to the context.
+4. When you mention a specific entity (order, delivery, billing doc, customer), always include its ID.
+5. At the end of every response, output the IDs of nodes the UI should highlight in this exact format:
+   <highlight_nodes>id1,id2,id3</highlight_nodes>
+   If nothing to highlight, output: <highlight_nodes></highlight_nodes>
+6. Be concise and analytical. Use bullet points for lists of entities.
+7. When asked about broken or incomplete flows, be specific: name the exact IDs affected.
+
+DATASET CONTEXT:
+{context}"""
+
+
+class QueryRequest(BaseModel):
+    message: str
+    conversation_history: list[dict] = []
+    highlighted_nodes: list[str] = []
+
+
+# ── Standard (non-streaming) ──────────────────────────────────────
+@router.post("/")
+async def natural_language_query(req: QueryRequest):
+    # Guardrail check BEFORE any LLM call
+    if not is_otc_query(req.message):
+        return {
+            "response": get_rejection_response(),
+            "highlighted_nodes": [],
+            "model_used": "guardrail",
+            "rejected": True,
+        }
+
+    cb = ContextBuilder(cfg.G, cfg.analyzer)
+    context = cb.build(req.message, req.highlighted_nodes)
+    system = SYSTEM_PROMPT.format(context=context)
+
+    messages = req.conversation_history + [
+        {"role": "user", "content": req.message}
+    ]
+
+    response = cfg.groq_client.chat.completions.create(
+        model=cfg.GROQ_MODEL,
+        messages=[{"role": "system", "content": system}] + messages,
+        max_tokens=1500,
+        temperature=0.1,   # low temp = factual, not creative
+    )
+
+    raw_text = response.choices[0].message.content
+
+    # Parse highlight tags
+    highlighted = []
+    match = re.search(r"<highlight_nodes>(.*?)</highlight_nodes>", raw_text, re.DOTALL)
+    if match:
+        ids = match.group(1).strip()
+        highlighted = [i.strip() for i in ids.split(",") if i.strip()]
+        raw_text = re.sub(r"<highlight_nodes>.*?</highlight_nodes>", "", raw_text, flags=re.DOTALL).strip()
+
+    return {
+        "response": raw_text,
+        "highlighted_nodes": highlighted,
+        "model_used": cfg.GROQ_MODEL,
+        "rejected": False,
+    }
+
+
+# ── Streaming ─────────────────────────────────────────────────────
+@router.post("/stream")
+async def stream_query(req: QueryRequest):
+    # Guardrail check
+    if not is_otc_query(req.message):
+        async def rejection_stream():
+            rejection = get_rejection_response()
+            yield f"data: {json.dumps({'token': rejection})}\n\n"
+            yield f"data: {json.dumps({'done': True, 'highlighted_nodes': []})}\n\n"
+        return StreamingResponse(rejection_stream(), media_type="text/event-stream")
+
+    cb = ContextBuilder(cfg.G, cfg.analyzer)
+    context = cb.build(req.message, req.highlighted_nodes)
+    system = SYSTEM_PROMPT.format(context=context)
+
+    messages = req.conversation_history + [
+        {"role": "user", "content": req.message}
+    ]
+
+    def generate():
+        full_text = ""
+        with cfg.groq_client.chat.completions.create(
+            model=cfg.GROQ_MODEL,
+            messages=[{"role": "system", "content": system}] + messages,
+            max_tokens=1500,
+            temperature=0.1,
+            stream=True,
+        ) as stream:
+            for chunk in stream:
+                token = chunk.choices[0].delta.content or ""
+                full_text += token
+                yield f"data: {json.dumps({'token': token})}\n\n"
+
+        # After full response — extract highlight tags and send final event
+        highlighted = []
+        match = re.search(r"<highlight_nodes>(.*?)</highlight_nodes>", full_text, re.DOTALL)
+        if match:
+            ids = match.group(1).strip()
+            highlighted = [i.strip() for i in ids.split(",") if i.strip()]
+
+        yield f"data: {json.dumps({'done': True, 'highlighted_nodes': highlighted})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+```
+
+---
+
+### Step 8 — `backend/main.py`
+
+```python
+# backend/main.py
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+import backend.config as cfg
+from backend.routers import graph, query
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Load graph once at startup
+    print("Loading graph cache...")
+    cfg.load_all()
+    yield
+    # Shutdown: nothing to clean up
+
+
+app = FastAPI(
+    title="OTC Graph Query API",
+    description="Order-to-Cash process graph with natural language querying",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+# CORS — allow Next.js frontend (adjust origin for production)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Routers
+app.include_router(graph.router)
+app.include_router(query.router)
+
+
+@app.get("/")
+async def root():
+    return {
+        "status": "ok",
+        "graph_nodes": cfg.G.number_of_nodes() if cfg.G else 0,
+        "graph_edges": cfg.G.number_of_edges() if cfg.G else 0,
+    }
+
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
+```
+
+---
+
+### Step 9 — Add `GROQ_API_KEY` to your `.env`
+
+```env
+SUPABASE_URL=your_supabase_url
+SUPABASE_KEY=your_supabase_key
+GROQ_API_KEY=your_groq_api_key_from_console.groq.com
+```
+
+---
+
+## How to Run Phase 3
+
+```bash
+# From project root
+pip install -r backend/requirements.txt
+
+# Make sure cache/otc_graph.pkl exists from Phase 2
+# then start the server:
+uvicorn backend.main:app --reload --port 8000
+```
+
+Open `http://localhost:8000/docs` — you'll get the full interactive Swagger UI showing every endpoint.
+
+**Quick test of all 3 required query types:**
+```bash
+# (a) Products with highest billing documents
+curl -X POST http://localhost:8000/query/ \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Which products are associated with the highest number of billing documents?"}'
+
+# (b) Trace a billing flow
+curl -X POST http://localhost:8000/query/ \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Trace the full flow for order 1234567"}'
+
+# (c) Broken flows
+curl -X POST http://localhost:8000/query/ \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Which sales orders have broken or incomplete flows?"}'
+
+# Guardrail test — should be rejected
+curl -X POST http://localhost:8000/query/ \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Write me a poem about the ocean"}'
+```
+
+Once you confirm the server starts and the 4 tests above pass, you're ready for **Phase 4 (Next.js frontend)**.
+
+/------------------------------------------------------------/ 
