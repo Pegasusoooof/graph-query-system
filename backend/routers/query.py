@@ -38,7 +38,6 @@ class QueryRequest(BaseModel):
 # ── Standard (non-streaming) ──────────────────────────────────────
 @router.post("/")
 async def natural_language_query(req: QueryRequest):
-    # Guardrail check BEFORE any LLM call
     if not is_otc_query(req.message):
         return {
             "response": get_rejection_response(),
@@ -59,12 +58,11 @@ async def natural_language_query(req: QueryRequest):
         model=cfg.GROQ_MODEL,
         messages=[{"role": "system", "content": system}] + messages,
         max_tokens=1500,
-        temperature=0.1,   # low temp = factual, not creative
+        temperature=0.1,
     )
 
     raw_text = response.choices[0].message.content
 
-    # Parse highlight tags
     highlighted = []
     match = re.search(r"<highlight_nodes>(.*?)</highlight_nodes>", raw_text, re.DOTALL)
     if match:
@@ -83,7 +81,6 @@ async def natural_language_query(req: QueryRequest):
 # ── Streaming ─────────────────────────────────────────────────────
 @router.post("/stream")
 async def stream_query(req: QueryRequest):
-    # Guardrail check
     if not is_otc_query(req.message):
         async def rejection_stream():
             rejection = get_rejection_response()
@@ -101,25 +98,34 @@ async def stream_query(req: QueryRequest):
 
     def generate():
         full_text = ""
-        with cfg.groq_client.chat.completions.create(
-            model=cfg.GROQ_MODEL,
-            messages=[{"role": "system", "content": system}] + messages,
-            max_tokens=1500,
-            temperature=0.1,
-            stream=True,
-        ) as stream:
-            for chunk in stream:
-                token = chunk.choices[0].delta.content or ""
-                full_text += token
-                yield f"data: {json.dumps({'token': token})}\n\n"
+        print("🔵 Stream started")
+        try:
+            with cfg.groq_client.chat.completions.create(
+                model=cfg.GROQ_MODEL,
+                messages=[{"role": "system", "content": system}] + messages,
+                max_tokens=1500,
+                temperature=0.1,
+                stream=True,
+            ) as stream:
+                print("🟢 Groq stream opened")
+                for chunk in stream:
+                    token = chunk.choices[0].delta.content or ""
+                    full_text += token
+                    print(f"🟡 Token: {repr(token)}")
+                    yield f"data: {json.dumps({'token': token})}\n\n"
 
-        # After full response — extract highlight tags and send final event
-        highlighted = []
-        match = re.search(r"<highlight_nodes>(.*?)</highlight_nodes>", full_text, re.DOTALL)
-        if match:
-            ids = match.group(1).strip()
-            highlighted = [i.strip() for i in ids.split(",") if i.strip()]
+            print(f"✅ Full response: {full_text[:100]}")
+            highlighted = []
+            match = re.search(r"<highlight_nodes>(.*?)</highlight_nodes>", full_text, re.DOTALL)
+            if match:
+                ids = match.group(1).strip()
+                highlighted = [i.strip() for i in ids.split(",") if i.strip()]
 
-        yield f"data: {json.dumps({'done': True, 'highlighted_nodes': highlighted})}\n\n"
+            yield f"data: {json.dumps({'done': True, 'highlighted_nodes': highlighted})}\n\n"
+
+        except Exception as e:
+            print(f"🔴 ERROR in generate(): {e}")
+            yield f"data: {json.dumps({'token': f'Error: {str(e)}'})}\n\n"
+            yield f"data: {json.dumps({'done': True, 'highlighted_nodes': []})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")

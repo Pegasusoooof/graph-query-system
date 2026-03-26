@@ -2,10 +2,9 @@
 import os
 import sys
 from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 from groq import Groq
 import networkx as nx
-
-load_dotenv()
 
 # ── Env vars ──────────────────────────────────────────────────────
 SUPABASE_URL = os.environ["SUPABASE_URL"]
