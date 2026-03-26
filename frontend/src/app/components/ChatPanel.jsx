@@ -1,7 +1,7 @@
 'use client'
 import { useState, useRef, useEffect } from 'react'
 
-const API = 'http://localhost:8000'
+const API = 'https://graph-query-system-x9mb.onrender.com/'
 
 export default function ChatPanel({ onHighlight }) {
   const [messages, setMessages] = useState([

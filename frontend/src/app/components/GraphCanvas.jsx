@@ -5,7 +5,7 @@ import { NODE_COLORS } from './Legend'
 
 const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), { ssr: false })
 
-const API = 'http://localhost:8000'
+const API = 'https://graph-query-system-x9mb.onrender.com/'
 
 export default function GraphCanvas({ highlightedIds, visibleTypes, onNodeClick, onReady }) {
   const [graphData, setGraphData] = useState({ nodes: [], links: [] })
