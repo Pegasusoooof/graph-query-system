@@ -4,15 +4,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import backend.config as cfg
 from backend.routers import graph, query
+from backend.logger import log
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Load graph once at startup
-    print("Loading graph cache...")
+    log.info("Starting OTC Graph Query API...", extra={"stage": "STARTUP"})
+    log.info("Loading graph cache from disk...", extra={"stage": "STARTUP"})
     cfg.load_all()
+    log.info(
+        f"Graph ready: {cfg.G.number_of_nodes()} nodes, {cfg.G.number_of_edges()} edges",
+        extra={"stage": "STARTUP"},
+    )
+    log.info(
+        f"LLM model: {cfg.GROQ_MODEL}",
+        extra={"stage": "STARTUP"},
+    )
+    log.info("API is ready to serve requests.", extra={"stage": "STARTUP"})
     yield
-    # Shutdown: nothing to clean up
+    log.info("Shutting down.", extra={"stage": "STARTUP"})
 
 
 app = FastAPI(
@@ -22,10 +32,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — allow Next.js frontend (adjust origin for production)
+# CORS — allow all origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000","https://graph-query-systemm.onrender.com"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

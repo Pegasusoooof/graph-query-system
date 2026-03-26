@@ -1,4 +1,5 @@
 # backend/services/guardrails.py
+from backend.logger import log
 
 REJECTION_RESPONSE = (
     "This system is designed to answer questions related to the "
@@ -28,7 +29,7 @@ _ALLOWLIST_STEMS = [
 ]
 
 
-def is_otc_query(message: str) -> bool:
+def is_otc_query(message: str, req_id: str = None) -> bool:
     """
     Two-stage check:
     1. If message contains a hard-blocklist term → reject immediately.
@@ -37,21 +38,37 @@ def is_otc_query(message: str) -> bool:
        the system prompt already instructs the model to refuse
        unrelated questions, so double-rejecting causes false negatives).
     """
+    extra = {"stage": "GUARDRAIL", "req_id": req_id}
     lower = message.lower()
+
+    log.debug(
+        f"Evaluating message ({len(message)} chars): {repr(message[:120])}{'...' if len(message) > 120 else ''}",
+        extra=extra,
+    )
 
     # Stage 1 — hard blocklist
     for term in _BLOCKLIST:
         if term in lower:
+            log.warning(
+                f"REJECTED — Stage 1 blocklist match: term={repr(term)}",
+                extra=extra,
+            )
             return False
 
     # Stage 2 — fast-pass on domain stems
     for stem in _ALLOWLIST_STEMS:
         if stem in lower:
+            log.info(
+                f"PASSED — Stage 2 allowlist match: stem={repr(stem)}",
+                extra=extra,
+            )
             return True
 
-    # Stage 3 — default PASS (short/ambiguous queries like "summarize",
-    # "what's the status", "give me an overview" should reach the LLM
-    # which will answer from context or politely refuse if truly off-topic)
+    # Stage 3 — default PASS
+    log.info(
+        "PASSED — Stage 3 default (no blocklist/allowlist match; forwarding to LLM)",
+        extra=extra,
+    )
     return True
 
 

@@ -3,6 +3,7 @@ import json
 import re
 import networkx as nx
 from graph.analyzer import OTCGraphAnalyzer
+from backend.logger import log, Timer
 
 
 class ContextBuilder:
@@ -17,7 +18,9 @@ class ContextBuilder:
         self.analyzer = analyzer
 
     # ── Public entry point ────────────────────────────────────────
-    def build(self, query: str, highlighted_node_ids: list[str] = None) -> str:
+    def build(self, query: str, highlighted_node_ids: list[str] = None, req_id: str = None) -> str:
+        extra = {"stage": "CONTEXT", "req_id": req_id}
+        timer = Timer()
         q = query.lower()
         parts = []
 
@@ -27,45 +30,84 @@ class ContextBuilder:
 
         # 2. Detect intents and fetch only what's needed
         intents = self._detect_intents(q)
+        log.info(
+            f"Detected intents: {sorted(intents) if intents else ['(none — broad overview fallback)']}",
+            extra=extra,
+        )
 
         if "entity_lookup" in intents:
-            parts += self._handle_entity_lookup(query)
+            log.debug("Running handler: entity_lookup", extra=extra)
+            result = self._handle_entity_lookup(query)
+            log.debug(f"  entity_lookup → {len(result)} context part(s)", extra=extra)
+            parts += result
 
         if "product_billing" in intents:
-            parts += self._handle_product_billing()
+            log.debug("Running handler: product_billing", extra=extra)
+            result = self._handle_product_billing()
+            log.debug(f"  product_billing → {len(result)} context part(s)", extra=extra)
+            parts += result
 
         if "trace" in intents:
-            parts += self._handle_trace(query)
+            log.debug("Running handler: trace", extra=extra)
+            result = self._handle_trace(query)
+            log.debug(f"  trace → {len(result)} context part(s)", extra=extra)
+            parts += result
 
         if "broken_flows" in intents:
-            parts += self._handle_broken_flows()
+            log.debug("Running handler: broken_flows", extra=extra)
+            result = self._handle_broken_flows()
+            log.debug(f"  broken_flows → {len(result)} context part(s)", extra=extra)
+            parts += result
 
         if "delivery_status" in intents:
-            parts += self._handle_delivery_status(q)
+            log.debug("Running handler: delivery_status", extra=extra)
+            result = self._handle_delivery_status(q)
+            log.debug(f"  delivery_status → {len(result)} context part(s)", extra=extra)
+            parts += result
 
         if "customer" in intents:
-            parts += self._handle_customers()
+            log.debug("Running handler: customer", extra=extra)
+            result = self._handle_customers()
+            log.debug(f"  customer → {len(result)} context part(s)", extra=extra)
+            parts += result
 
         if "journal" in intents:
-            parts += self._handle_journals()
+            log.debug("Running handler: journal", extra=extra)
+            result = self._handle_journals()
+            log.debug(f"  journal → {len(result)} context part(s)", extra=extra)
+            parts += result
 
         if "billing_overview" in intents:
-            parts += self._handle_billing_overview()
+            log.debug("Running handler: billing_overview", extra=extra)
+            result = self._handle_billing_overview()
+            log.debug(f"  billing_overview → {len(result)} context part(s)", extra=extra)
+            parts += result
 
         if "sales_order_overview" in intents:
-            parts += self._handle_sales_order_overview()
+            log.debug("Running handler: sales_order_overview", extra=extra)
+            result = self._handle_sales_order_overview()
+            log.debug(f"  sales_order_overview → {len(result)} context part(s)", extra=extra)
+            parts += result
 
         # 3. If no specific intent matched beyond summary, add a broad overview
         #    so the LLM can still answer generic questions like "what's in the dataset"
         if len(intents) == 0:
+            log.debug("Running handler: broad_overview (fallback)", extra=extra)
             parts += self._handle_broad_overview()
 
         # 4. Currently highlighted nodes (UI context)
         if highlighted_node_ids:
+            log.debug(f"Injecting {len(highlighted_node_ids)} highlighted node(s) into context", extra=extra)
             parts += self._handle_highlighted(highlighted_node_ids)
 
         sep = "\n\n" + "─" * 40 + "\n"
-        return sep.join(parts)
+        context = sep.join(parts)
+
+        log.info(
+            f"Context built: {len(parts)} section(s), {len(context):,} chars, {len(context.split()):,} words  [{timer.elapsed_ms()}ms]",
+            extra=extra,
+        )
+        return context
 
     # ── Intent detection ──────────────────────────────────────────
     def _detect_intents(self, q: str) -> set:

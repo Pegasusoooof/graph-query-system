@@ -2,9 +2,10 @@
 import os
 import sys
 from dotenv import load_dotenv
-load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
-from groq import Groq
+from groq import AsyncGroq
 import networkx as nx
+
+load_dotenv()
 
 # ── Env vars ──────────────────────────────────────────────────────
 SUPABASE_URL = os.environ["SUPABASE_URL"]
@@ -18,7 +19,7 @@ GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 # - Better than Mixtral/Gemma for JSON-grounded Q&A
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
-groq_client = Groq(api_key=GROQ_API_KEY)
+groq_client = AsyncGroq(api_key=GROQ_API_KEY)
 
 # ── Graph (loaded once at startup) ────────────────────────────────
 PROJECT_ROOT = os.path.join(os.path.dirname(__file__), "..")
