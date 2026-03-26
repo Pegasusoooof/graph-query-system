@@ -4,6 +4,32 @@ A full-stack application that converts an Order-to-Cash (O2C) business dataset i
 
 ---
 
+## Demo
+
+[Watch the demo on Google Drive](https://drive.google.com/file/d/1eBFRuezYb7fDh_Fjha-fPQxp4Psx8Ei9/view?usp=sharing)
+
+---
+
+## Test Queries
+
+Use these to verify the application end-to-end after setup.
+
+### Entity Lookups
+- `how many customers are in the dataset?`
+- `list all products`
+- `show me all sales orders`
+
+### Order Flow / Tracing
+- `trace the full order flow for the first sales order you can find`
+- `show me the end-to-end chain for a delivered and billed order`
+- `trace the flow of order SO-740518`
+
+### Delivery Queries
+- `how many deliveries have been completed?`
+- `what is the delivery status breakdown across all orders?`
+
+---
+
 ## Overview
 
 The system ingests structured O2C data, builds a directed graph of business entities and their relationships, visualizes it in an interactive UI, and lets users query the data in natural language. The AI translates queries into structured graph operations and returns data-backed answers — it does not hallucinate or answer from general knowledge.
@@ -165,11 +191,10 @@ Three-stage filter applied before every LLM call:
 ### Backend
 
 ```bash
-cd backend
 pip install -r requirements.txt
 cp .env.example .env
 # fill in SUPABASE_URL, SUPABASE_KEY, GROQ_API_KEY
-uvicorn main:app --reload --port 8000
+uvicorn backend.main:app --reload --port 8000
 ```
 
 ### Frontend
