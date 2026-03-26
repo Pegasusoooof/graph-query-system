@@ -1,0 +1,19 @@
+I have completed Phase 2 of my project (graph construction and caching).
+Please review my current setup and provide a complete implementation plan for Phase 3: Backend API, following the same level of detail, structure, and production-ready quality as you provided for Phase 2.
+
+Before proceeding, confirm that Phase 2 outputs and dependencies are sufficient for Phase 3, and highlight any missing components or recommended improvements.
+
+Project Context
+
+This project is a Graph-Based Data Modeling and Query System for an Order-to-Cash (O2C) dataset.
+
+Technology Stack
+Database: Supabase (PostgreSQL)
+Backend: Python (FastAPI)
+Frontend: React with Next.js
+Graph Layer:
+NetworkX (graph construction & analysis)
+react-force-graph (visualization)
+LLM Provider: Groq API (console.groq.com)
+
+Please select the most appropriate Groq-hosted model for structured reasoning over graph-derived context.
